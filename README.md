@@ -6,11 +6,12 @@ Idleon Darts Helper watches the Throwy Darts minigame, works out where every dar
 right moment. It ships with a model trained on more than 1,400 real throws, so there is
 nothing to train: install, open the minigame, run one command.
 
-- It has hit **9, 10 and 11 bullseyes in a row** in real games; early in a game ~75% of
-  throws are bullseyes.
+- It has hit **16 and 17 bullseyes in a row** in real games, and up to ~85% bullseyes in
+  the first part of a game.
 - It only looks at the screen and clicks the mouse: no game files, no memory reading, no injection.
-- Any window size and any display scaling.
+- Any window size and any display scaling (a bigger game window is more accurate, see below).
 - It keeps playing until the game is over and tells you when the trophy streak is reached.
+- Tested on Windows (Steam) and macOS (CrossOver).
 
 ## Install (Windows)
 
@@ -32,7 +33,9 @@ nothing to train: install, open the minigame, run one command.
 ## Quick start
 
 1. Start Legends of Idleon and open **Throwy Darts**. Keep the whole game window visible,
-   not minimised and not covered by other windows.
+   not minimised and not covered by other windows, including the PowerShell window.
+   **Make the game window as large as you can**: the bot reads the dart angle from pixels,
+   and a bigger window means fewer misses.
 2. In PowerShell, in the project folder (run `.venv\Scripts\activate` first if it's a new
    window):
 
@@ -70,25 +73,42 @@ What the bot handles on its own:
 - **The swing speeds up during a game.** The bot re-measures the swing before every throw.
 - **Game hitches.** Frozen frames are ignored; if the game hitches right before a click,
   the bot waits for the next swing.
-- **Ignored clicks.** The game occasionally drops a click (about 1 in 10 under CrossOver
-  on macOS). The bot notices (same platform and score afterwards), doesn't count it as a
-  miss, and throws again.
+- **Ignored clicks.** The game occasionally drops a click (from ~1 in 25 to ~1 in 10 in
+  our sessions). The bot notices (same platform and score afterwards), doesn't count it
+  as a miss, and throws again.
 - **Moved or resized game window.** The bot finds it again.
 - **Bullseye streak bonuses** (+10, +30) count as bullseyes in the streak counter.
 
 ### Expected accuracy
 
-The swing gets faster as a game goes on. The bot's click timing scatters by about ±10 ms,
-most likely the game's own frame rate, and that costs more the faster the dart moves:
+Two things decide how often the bot hits the bullseye.
+
+**Game window size.** The dart is only a few pixels thick, so a larger window gives a more
+precise angle reading. At the same swing speed, the scatter of the launch angle was:
+
+| game area width, as captured | launch-angle scatter | bullseyes (early game) |
+| ---------------------------- | -------------------- | ---------------------- |
+| ~1,100 px                    | ~2.1–2.3°            | ~75–80%                |
+| ~1,500 px                    | ~0.9–1.4°            | ~82–85%                |
+
+On Windows these are real screen pixels. On macOS they are points: ~1,500 was the game
+filling a 1512-point-wide laptop screen. The bullseye tolerates about ±2.3° of launch
+angle. The ~1,500 px row comes from one 74-throw game, with streaks of 17 and 16. Smaller
+windows work, just less accurately.
+
+**Swing speed.** The swing gets faster as a game goes on. The bot's click timing scatters
+by about ±10 ms, most likely the game's own frame rate, and that costs more the faster
+the dart moves. Measured on the ~1,100 px window:
 
 | swing speed   | when       | bullseyes |
 | ------------- | ---------- | --------- |
-| up to ~220°/s | early game | ~70–75%   |
-| 220–300°/s    | mid game   | ~40%      |
+| up to ~220°/s | early game | ~70–80%   |
+| 220–300°/s    | mid game   | ~40–50%   |
 | over 300°/s   | late game  | ~33%      |
 
-Long streaks therefore happen early in a game. If you only want the trophy, restarting the
-minigame once the swing gets fast is the quickest route.
+Long streaks therefore happen early in a game. If you only want the trophy, use a big
+window and, if the first ~60 throws don't get it, restart the minigame. A new game starts
+with a slow swing again.
 
 ### Troubleshooting
 
