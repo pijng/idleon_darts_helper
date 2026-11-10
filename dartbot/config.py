@@ -6,7 +6,27 @@ this space by `screen.Canvas`, so model parameters are resolution independent.
 """
 from pathlib import Path
 
+import cv2
+import numpy as np
+
 ASSETS = Path(__file__).parent / "assets"
+
+
+def read_image(path, flags=cv2.IMREAD_COLOR):
+    """cv2.imread that also works for non-ASCII paths on Windows (e.g. C:\\Users\\Марк)."""
+    img = cv2.imdecode(np.fromfile(str(path), dtype=np.uint8), flags)
+    if img is None:
+        raise FileNotFoundError(path)
+    return img
+
+
+def write_png(path, img):
+    """cv2.imwrite counterpart of read_image."""
+    ok, buf = cv2.imencode(".png", img)
+    if not ok:
+        raise ValueError(f"cannot encode {path}")
+    buf.tofile(str(path))
+
 
 REF_W, REF_H = 3020, 1710
 
@@ -15,7 +35,10 @@ ANCHOR_LOGO = (2540, 15)    # "THROWY DARTS" banner, assets/logo.png
 ANCHOR_EXIT = (2815, 1595)  # EXIT button, assets/exit.png
 
 # Rects are (x0, y0, x1, y1) in reference space.
-FIELD = (0, 200, 2885, 1650)
+# The platform can sit as low as y ~1670 (seen live), so the field runs to the bottom.
+FIELD = (0, 200, 2885, 1710)
+# Darts never fly below the board; the bottom strip shows banner text between throws.
+FLIGHT_MAX_Y = 1640
 SCORE_TEXT = (80, 100, 330, 160)
 WIND_TEXT = (1540, 95, 1760, 160)
 WIND_ARROW = (1760, 30, 1905, 165)

@@ -17,11 +17,14 @@ from dataclasses import asdict, dataclass
 from pathlib import Path
 
 import numpy as np
-from scipy.optimize import least_squares
+from scipy.optimize import least_squares, minimize
 
 from . import config as C
 from .records import Throw
 from .swing import fit_swing, recent
+from .vision import ANGLE_VERSION, LEGACY_ANGLE_MAX, LEGACY_ANGLE_SHIFT
+
+MIN_CURRENT_THROWS = 30
 
 
 @dataclass
@@ -31,9 +34,7 @@ class Model:
     beta_y: float = 0.0
     rel_y0: float = -175.0          # release y = py + rel_y0 + rel_y1 * theta_deg
     rel_y1: float = -1.75
-    angle_offset: float = 4.3       # launch angle = sprite angle + offset
-    swing_center: float = 16.9
-    swing_amp: float = 41.5
+    angle_offset: float = 4.3       # launch angle = sprite angle at (click + latency) + offset
     latency: float = 0.05           # click -> game reads input, seconds (per machine)
     board_x: float = C.BOARD_X
     target_y: float = C.BULLSEYE_Y
@@ -44,7 +45,8 @@ class Model:
 
     @classmethod
     def load(cls, path: Path) -> "Model":
-        return cls(**json.loads(Path(path).read_text()))
+        known = cls.__dataclass_fields__
+        return cls(**{k: v for k, v in json.loads(Path(path).read_text()).items() if k in known})
 
     # ------------------------------------------------------------ prediction
 
@@ -73,17 +75,13 @@ class Model:
         xr, yr = self.release(plat, theta)
         return float(self.y_at(self.board_x, theta, xr, yr, ax, ay))
 
-    def launch_range(self):
-        lo = self.swing_center - self.swing_amp + self.angle_offset
-        hi = self.swing_center + self.swing_amp + self.angle_offset
-        return lo, hi
-
-    def solve(self, plat, wind_mph, wind_dir, target_y=None):
+    def solve(self, plat, wind_mph, wind_dir, sprite_range, target_y=None):
         """Launch angle hitting target_y, preferring the least sensitive solution.
 
-        Returns (theta, dy/dtheta in px/deg) or None if unreachable."""
+        `sprite_range` is the (lo, hi) of the current swing. Returns
+        (theta, dy/dtheta in px/deg) or None if unreachable."""
         target_y = self.target_y if target_y is None else target_y
-        lo, hi = self.launch_range()
+        lo, hi = (a + self.angle_offset for a in sprite_range)
         th = np.arange(lo + 0.5, hi - 0.5, 0.05)
         y = np.array([self.hit_y(plat, t, wind_mph, wind_dir) for t in th])
         f = y - target_y
@@ -109,109 +107,135 @@ def _path_xy(t: Throw):
     return P if len(P) >= 10 else None
 
 
+def _fit_launch(m: Model, t: Throw, P, x0=None):
+    """Best (theta, release y) for one path under fixed global physics."""
+    ax, ay = m.accel(t.wind_mph, t.wind_dir)
+    xr = t.plat[0] + C.RELEASE_DX
+    if x0 is None:
+        q = np.polyfit(P[:, 1] - xr, P[:, 2], 2)
+        x0 = [float(np.degrees(np.arctan(-q[1]))), float(q[2])]
+
+    def resid(p):
+        return np.nan_to_num(m.y_at(P[:, 1], p[0], xr, p[1], ax, ay) - P[:, 2], nan=1e3)
+
+    r = least_squares(resid, x0, loss="soft_l1", f_scale=3.0, x_scale=[1.0, 10.0], xtol=1e-12, ftol=1e-12)
+    return r.x, r.fun
+
+
 def fit_paths(model: Model, throws: list[Throw], fit_wind=True):
     """Fit g / wind betas (global) and launch angle + release y (per throw).
 
-    Returns per-throw (theta, yr, rms)."""
+    Variable projection: the outer search only sees the 1-3 global parameters;
+    every evaluation re-solves each throw's own 2-parameter fit (warm-started).
+    Nelder-Mead on the robust total cost: finite-difference gradients through the
+    inner fits were too noisy to make progress.
+    Returns per-throw (throw, theta, yr, path error in px)."""
     data = [(t, _path_xy(t)) for t in throws]
     data = [(t, P) for t, P in data if P is not None]
     if not data:
         raise ValueError("no usable flight paths")
+    warm = [None] * len(data)
 
-    init = []
-    for t, P in data:
-        xr = t.plat[0] + C.RELEASE_DX
-        q = np.polyfit(P[:, 1] - xr, P[:, 2], 2)
-        init += [float(np.degrees(np.arctan(-q[1]))), float(q[2])]
+    def with_globals(p):
+        g, bx, by = (p[0], p[1], p[2]) if fit_wind else (p[0], model.beta_x * 1e5, model.beta_y * 1e5)
+        return Model(**{**asdict(model), "g": g * 1e-4, "beta_x": bx * 1e-5, "beta_y": by * 1e-5})
 
-    def unpack(p):
-        g, bx, by = (p[0], p[1], p[2]) if fit_wind else (p[0], model.beta_x, model.beta_y)
-        return g * 1e-4, bx * 1e-5, by * 1e-5, p[3 if fit_wind else 1:]
-
-    def resid(p):
-        g, bx, by, per = unpack(p)
-        m = Model(**{**asdict(model), "g": g, "beta_x": bx, "beta_y": by})
-        out = []
+    def cost(p):
+        m = with_globals(p)
+        total = 0.0
         for k, (t, P) in enumerate(data):
-            th, yr = per[2 * k], per[2 * k + 1]
-            ax, ay = m.accel(t.wind_mph, t.wind_dir)
-            yp = m.y_at(P[:, 1], th, t.plat[0] + C.RELEASE_DX, yr, ax, ay)
-            out.append(np.nan_to_num(yp - P[:, 2], nan=1e3))
-        return np.concatenate(out)
+            x, fun = _fit_launch(m, t, P, warm[k])
+            warm[k] = x
+            total += float(np.sum(np.sqrt(1 + (fun / 3.0) ** 2) - 1))  # soft_l1, 3 px scale
+        return total
 
     head = [model.g * 1e4, model.beta_x * 1e5, model.beta_y * 1e5] if fit_wind else [model.g * 1e4]
-    r = least_squares(resid, head + init, loss="soft_l1", f_scale=3.0)
-    g, bx, by, per = unpack(r.x)
-    model.g, model.beta_x, model.beta_y = float(g), float(bx), float(by)
-    res = resid(r.x)
-    out, i = [], 0
+    simplex = [head] + [list(np.add(head, np.eye(len(head))[i] * (0.3 if i == 0 else 1.0)))
+                        for i in range(len(head))]
+    r = minimize(cost, head, method="Nelder-Mead",
+                 options=dict(xatol=1e-3, fatol=0.5, initial_simplex=simplex))
+    m = with_globals(r.x)
+    model.g, model.beta_x, model.beta_y = m.g, m.beta_x, m.beta_y
+    out = []
     for k, (t, P) in enumerate(data):
-        n = len(P)
-        out.append((t, float(per[2 * k]), float(per[2 * k + 1]),
-                    float(np.sqrt(np.mean(res[i:i + n] ** 2)))))
-        i += n
+        x, fun = _fit_launch(m, t, P, warm[k])
+        # median: the first tracked point often sits on the hand
+        out.append((t, float(x[0]), float(x[1]), float(np.median(np.abs(fun)))))
     return out
 
 
-def sprite_at(t: Throw, model: Model, when: float):
-    """Sprite angle at time `when` from the swing samples recorded before the throw."""
-    if len(t.swing) < 8:
+def swing_samples(t: Throw):
+    """Swing samples in the current angle measurement (see vision.ANGLE_VERSION)."""
+    S = np.asarray(t.swing, float).reshape(-1, 2)
+    if t.extra.get("angle_v", 1) < 2:
+        S = S[S[:, 1] < LEGACY_ANGLE_MAX]
+        S[:, 1] += LEGACY_ANGLE_SHIFT
+    return S
+
+
+def swing_before(t: Throw, until: float | None = None):
+    """Swing fit from the samples a throw recorded (optionally only those before `until`)."""
+    S = swing_samples(t)
+    if until is not None:
+        S = S[S[:, 0] <= until]
+    if len(S) < 20:
         return None
-    S = recent(t.swing)
-    f = fit_swing(S[:, 0], S[:, 1], model.swing_center, model.swing_amp)
-    if f is None or f.rms > 3.0:
+    f = fit_swing(*recent(S).T)
+    if f is None or f.inliers < 0.6 or f.rms > 3.0:
         return None
-    return float(f.angle(when)), f
+    return f
 
 
 def fit_model(throws: list[Throw], model: Model | None = None, log=print) -> Model:
     model = model or Model()
 
-    # 1. swing shape from long held segments
-    segs = [np.asarray(t.swing, float) for t in throws if len(t.swing) >= 60]
-    if segs:
-        cs, as_ = [], []
-        for S in segs:
-            f = fit_swing(S[:, 0], S[:, 1], model.swing_center, model.swing_amp, fit_shape=True)
-            if f and f.rms < 2.5:
-                cs.append(f.center)
-                as_.append(f.amp)
-        if cs:
-            model.swing_center, model.swing_amp = float(np.median(cs)), float(np.median(as_))
-            log(f"swing: center={model.swing_center:.2f} amp={model.swing_amp:.2f} ({len(cs)} segments)")
-
-    # 2. flight physics
+    # 1. flight physics
     # beta_x / beta_y are only separable with at least two distinct wind directions
     wind_dirs = {round(t.wind_dir / 15) for t in throws if t.wind_mph > 0}
     fits = fit_paths(model, throws, fit_wind=len(wind_dirs) >= 2)
     log(f"physics: g={model.g:.4e} beta_x={model.beta_x:.3e} beta_y={model.beta_y:.3e} "
-        f"over {len(fits)} paths, path rms median={np.median([f[3] for f in fits]):.2f}px")
+        f"over {len(fits)} paths, median path error {np.median([f[3] for f in fits]):.2f}px")
 
-    # 3. release point vs launch angle
+    # 2. release point vs launch angle
     th = np.array([f[1] for f in fits])
     dy = np.array([f[2] - f[0].plat[1] for f in fits])
-    model.rel_y1, model.rel_y0 = (float(v) for v in np.polyfit(th, dy, 1))
+    q0 = np.polyfit(th, dy, 1)
+    q = least_squares(lambda q: q[0] * th + q[1] - dy, q0, loss="cauchy", f_scale=5.0).x
+    model.rel_y1, model.rel_y0 = float(q[0]), float(q[1])
     log(f"release: y = py + {model.rel_y0:.1f} + {model.rel_y1:.3f}*theta")
 
-    # 4. sprite -> launch offset (video: release_t is the last held frame) and
-    #    latency (live: launch happens at click_t + latency)
-    offs, lats = [], []
-    for t, theta, _, _ in fits:
-        if t.click_t is None:
-            r = sprite_at(t, model, t.release_t)
-            if r:
-                offs.append(theta - r[0])
-    if offs:
-        model.angle_offset = float(np.median(offs))
-        log(f"angle offset: {model.angle_offset:.2f} deg (std {np.std(offs):.2f}, n={len(offs)})")
-    for t, theta, _, _ in fits:
-        if t.click_t is not None:
-            lat = latency_from_throw(t, model, theta)
-            if lat is not None:
-                lats.append(lat)
-    if lats:
-        model.latency = float(np.median(lats))
-        log(f"latency: {model.latency * 1000:.0f} ms (n={len(lats)})")
+    # 3. launch angle = sprite(click + latency) + offset.
+    #    Video throws have no click: their release time is the last held frame, latency 0.
+    #    Live throws mix swing speeds and directions, which separates latency from offset.
+    #    Legacy throws are only approximately converted to the current angle measurement
+    #    (they left a +1.2 deg aiming bias), so they are used only while there are too
+    #    few current ones.
+    current = [f for f in fits if f[0].extra.get("angle_v", 1) >= ANGLE_VERSION]
+    use = current if len(current) >= MIN_CURRENT_THROWS else fits
+    obs = []  # (swing fit, time, measured theta, is_live)
+    for t, theta, _, _ in use:
+        when = t.click_t if t.click_t is not None else t.release_t
+        f = swing_before(t, when)
+        if f is not None:
+            obs.append((f, when, theta, t.click_t is not None))
+    if obs:
+        log(f"launch calibration from {'current-detector' if use is current else 'all'} throws")
+        live = any(o[3] for o in obs)
+
+        def resid(p):
+            off, lat = p[0], (p[1] if live else 0.0)
+            return np.array([th_ - (f.angle(w + (lat if is_live else 0.0)) + off)
+                             for f, w, th_, is_live in obs])
+
+        p0 = [model.angle_offset, model.latency] if live else [model.angle_offset]
+        r = least_squares(resid, p0, loss="cauchy", f_scale=2.0)
+        model.angle_offset = float(r.x[0])
+        if live:
+            model.latency = float(np.clip(r.x[1], 0.0, 0.3))
+        res = np.abs(r.fun)
+        log(f"launch: offset {model.angle_offset:.2f} deg"
+            + (f", latency {model.latency * 1000:.0f} ms" if live else "")
+            + f" (n={len(obs)}, median |err| {np.median(res):.2f} deg, p90 {np.percentile(res, 90):.2f})")
 
     model.n_throws = len(fits)
     return model
@@ -219,18 +243,17 @@ def fit_model(throws: list[Throw], model: Model | None = None, log=print) -> Mod
 
 def latency_from_throw(t: Throw, model: Model, theta):
     """Delay between our click and the launch, inferred from the measured launch angle."""
-    r = sprite_at(t, model, t.click_t)
-    if r is None:
+    f = swing_before(t, t.click_t)
+    if f is None:
         return None
-    _, f = r
     target = theta - model.angle_offset
-    # Search the crossing nearest to click_t + current latency estimate.
+    # The crossing of the target nearest to click_t + current latency estimate.
     ts = np.linspace(t.click_t - 0.05, t.click_t + 0.3, 701)
     err = np.abs(f.angle(ts) - target)
-    guess = t.click_t + model.latency
     cand = ts[err < 1.5]
     if len(cand) == 0:
         return None
+    guess = t.click_t + model.latency
     return float(cand[np.argmin(np.abs(cand - guess))] - t.click_t)
 
 
@@ -239,14 +262,5 @@ def measure_launch(model: Model, t: Throw):
     P = _path_xy(t)
     if P is None:
         return None
-    ax, ay = model.accel(t.wind_mph, t.wind_dir)
-    xr = t.plat[0] + C.RELEASE_DX
-
-    def resid(p):
-        return np.nan_to_num(model.y_at(P[:, 1], p[0], xr, p[1], ax, ay) - P[:, 2], nan=1e3)
-
-    q = np.polyfit(P[:, 1] - xr, P[:, 2], 2)
-    r = least_squares(resid, [float(np.degrees(np.arctan(-q[1]))), float(q[2])],
-                      loss="soft_l1", f_scale=3.0)
-    rms = float(np.sqrt(np.mean(r.fun ** 2)))
-    return float(r.x[0]), rms
+    x, fun = _fit_launch(model, t, P)
+    return float(x[0]), float(np.sqrt(np.mean(fun ** 2)))

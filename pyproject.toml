@@ -2,7 +2,10 @@
 name = "dartbot"
 version = "0.1.0"
 description = "Vision bot for the Throwy Darts minigame in Legends of Idleon"
-requires-python = ">=3.10"
+# 3.11+: time.sleep uses high-resolution timers on Windows (click timing needs ~1 ms)
+requires-python = ">=3.11"
+license = "MIT"
+license-files = ["LICENSE"]
 dependencies = [
     "opencv-python>=4.8",
     "numpy>=1.26",
@@ -15,7 +18,7 @@ dependencies = [
 dartbot = "dartbot.__main__:main"
 
 [build-system]
-requires = ["setuptools>=68"]
+requires = ["setuptools>=77"]
 build-backend = "setuptools.build_meta"
 
 [tool.setuptools.packages.find]

@@ -9,8 +9,8 @@ import numpy as np
 
 from . import config as C
 
-_logo = cv2.imread(str(C.ASSETS / "logo.png"), cv2.IMREAD_GRAYSCALE)
-_exit = cv2.imread(str(C.ASSETS / "exit.png"), cv2.IMREAD_GRAYSCALE)
+_logo = C.read_image(C.ASSETS / "logo.png", cv2.IMREAD_GRAYSCALE)
+_exit = C.read_image(C.ASSETS / "exit.png", cv2.IMREAD_GRAYSCALE)
 
 
 @dataclass

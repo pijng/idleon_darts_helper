@@ -38,8 +38,13 @@ def main(argv=None):
     p.add_argument("--monitor", type=int)
     p.add_argument("--dry-run", action="store_true", help="track and plan, never click")
     p.add_argument("--replay", type=Path, help="dry-run against a recording played in real time")
-    p.add_argument("--throws", type=int, default=0, help="stop after N throws (0 = until trophy/game over)")
-    p.add_argument("--streak", type=int, default=9, help="stop after this many bullseyes in a row")
+    p.add_argument("--throws", type=int, default=0, help="stop after N throws (0 = until game over)")
+    p.add_argument("--streak", type=int, default=0,
+                   help="stop after this many bullseyes in a row (0 = keep playing)")
+    p.add_argument("--direction", choices=["up", "down", "any"], default="up",
+                   help="click only while the dart swings this way (live data: up hits far more often)")
+    p.add_argument("--debug", action="store_true",
+                   help="verbose console + logs/<session>/dartbot.log and snapshots of odd moments")
 
     args = ap.parse_args(argv)
 

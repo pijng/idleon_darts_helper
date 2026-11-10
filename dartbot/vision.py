@@ -8,7 +8,7 @@ import numpy as np
 
 from . import config as C
 
-_plat = cv2.imread(str(C.ASSETS / "platform.png"), cv2.IMREAD_GRAYSCALE)
+_plat = C.read_image(C.ASSETS / "platform.png", cv2.IMREAD_GRAYSCALE)
 _plat_small = cv2.resize(_plat, None, fx=0.25, fy=0.25, interpolation=cv2.INTER_AREA)
 
 
@@ -34,6 +34,16 @@ def swing_rect(plat):
 
 # ---------------------------------------------------------------- dart in hand
 
+# Version of the dart-angle measurement stored with each throw (Throw.extra["angle_v"]).
+# v1 ran PCA over every bright pixel within 130 px of the tip. On steep swings that
+# included the face and glove, so 32-56 deg read as ~30 deg, and lower angles read
+# ~2 deg low. v2 uses only the shaft (70 px from the tip).
+ANGLE_VERSION = 2
+LEGACY_ANGLE_SHIFT = 2.1     # v2 - v1 below LEGACY_ANGLE_MAX (measured on gameplay.mov)
+LEGACY_ANGLE_MAX = 30.0      # v1 readings above this are unreliable
+SHAFT_RADIUS = 70
+
+
 @dataclass
 class DartReading:
     angle: float      # degrees, counter-clockwise from +x (screen up = positive)
@@ -56,7 +66,7 @@ def dart_angle(roi_img, plat) -> DartReading | None:
     d2[~right] = -1
     k = int(np.argmax(d2))
     tx, ty = xs[k], ys[k]
-    near = ((xs - tx) ** 2 + (ys - ty) ** 2 < 130 ** 2) & right
+    near = ((xs - tx) ** 2 + (ys - ty) ** 2 < SHAFT_RADIUS ** 2) & right
     if near.sum() < 20:
         return None
     P = np.stack([xs[near], ys[near]], 1).astype(float)
@@ -98,6 +108,7 @@ class FlightTracker:
         small = field_img[::s, ::s]
         m = dart_mask(small)
         m[:, : max(0, (self.x_min - C.FIELD[0]) // s)] = False
+        m[max(0, (C.FLIGHT_MAX_Y - C.FIELD[1]) // s):, :] = False
         self.masks.append(m)
         self.times.append(t)
 
@@ -132,7 +143,7 @@ class FlightTracker:
 def _load_glyphs():
     glyphs = []
     for p in sorted((C.ASSETS / "glyphs").glob("*.png")):
-        g = cv2.imread(str(p), cv2.IMREAD_GRAYSCALE) > 127
+        g = C.read_image(p, cv2.IMREAD_GRAYSCALE) > 127
         glyphs.append((p.stem.split("_")[0], g))
     return glyphs
 
