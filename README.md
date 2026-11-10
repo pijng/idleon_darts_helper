@@ -1,7 +1,8 @@
-# dartbot: Throwy Darts bot for Legends of Idleon
+# Idleon Darts Helper
 
-**Get the "9 Bullseye in a row" trophy without the grind.** dartbot watches the Throwy
-Darts minigame, works out where every dart will fly (including the wind), and clicks at the
+**Get the "9 Bullseye in a row" trophy without the grind.**
+
+Idleon Darts Helper watches the Throwy Darts minigame, works out where every dart will fly (including the wind), and clicks at the
 right moment. It ships with a model trained on more than 1,400 real throws, so there is
 nothing to train: install, open the minigame, run one command.
 
@@ -16,8 +17,8 @@ nothing to train: install, open the minigame, run one command.
 1. Install **Python 3.12** from [python.org](https://www.python.org/downloads/windows/).
    In the installer, tick **"Add python.exe to PATH"**.
 2. Download this project (**Code → Download ZIP**, then unzip it) or `git clone` it.
-3. Open **PowerShell** in the project folder (Shift + right-click the folder → *Open in
-   Terminal*) and run:
+3. Open **PowerShell** in the project folder (Shift + right-click the folder → _Open in
+   Terminal_) and run:
 
    ```powershell
    py -3.12 -m venv .venv
@@ -50,18 +51,18 @@ dart angle, wind, score) and the angle it would aim at, without clicking.
 
 ## Features
 
-| command | what it does |
-| --- | --- |
-| `dartbot play` | plays until the game ends (no dart in hand for 30 s) |
-| `dartbot play --streak 9` | stops after 9 bullseyes in a row instead of playing on |
-| `dartbot play --throws 20` | stops after 20 throws |
-| `dartbot play --dry-run` | tracks and plans but never clicks; your own throws are logged as training data |
-| `dartbot play --debug` | step-by-step log, plus `logs/<date-time>/` with a log file and screenshots of odd moments |
+| command                                  | what it does                                                                                |
+| ---------------------------------------- | ------------------------------------------------------------------------------------------- |
+| `dartbot play`                           | plays until the game ends (no dart in hand for 30 s)                                        |
+| `dartbot play --streak 9`                | stops after 9 bullseyes in a row instead of playing on                                      |
+| `dartbot play --throws 20`               | stops after 20 throws                                                                       |
+| `dartbot play --dry-run`                 | tracks and plans but never clicks; your own throws are logged as training data              |
+| `dartbot play --debug`                   | step-by-step log, plus `logs/<date-time>/` with a log file and screenshots of odd moments   |
 | `dartbot play --direction up\|down\|any` | which way the dart must be swinging when clicked (default `up`, which is far more accurate) |
-| `dartbot play --monitor N` | capture only monitor N (default: all monitors) |
-| `dartbot check` | one-shot detection report |
-| `dartbot fit` | retrains `model.json` from all logged throws (~2 min) |
-| `dartbot analyze video.mp4` | extracts throws from a gameplay recording into training data |
+| `dartbot play --monitor N`               | capture only monitor N (default: all monitors)                                              |
+| `dartbot check`                          | one-shot detection report                                                                   |
+| `dartbot fit`                            | retrains `model.json` from all logged throws (~2 min)                                       |
+| `dartbot analyze video.mp4`              | extracts throws from a gameplay recording into training data                                |
 
 What the bot handles on its own:
 
@@ -80,11 +81,11 @@ What the bot handles on its own:
 The swing gets faster as a game goes on. The bot's click timing scatters by about ±10 ms,
 most likely the game's own frame rate, and that costs more the faster the dart moves:
 
-| swing speed | when | bullseyes |
-| --- | --- | --- |
-| up to ~220°/s | early game | ~70–75% |
-| 220–300°/s | mid game | ~40% |
-| over 300°/s | late game | ~33% |
+| swing speed   | when       | bullseyes |
+| ------------- | ---------- | --------- |
+| up to ~220°/s | early game | ~70–75%   |
+| 220–300°/s    | mid game   | ~40%      |
+| over 300°/s   | late game  | ~33%      |
 
 Long streaks therefore happen early in a game. If you only want the trophy, restarting the
 minigame once the swing gets fast is the quickest route.
@@ -138,16 +139,16 @@ Sharing `data/live_throws.jsonl` helps everyone, especially throws in strong win
 
 ### Files
 
-| path | role |
-| --- | --- |
-| `dartbot/config.py` | reference geometry: board segments, panels, anchors |
-| `dartbot/screen.py` | canvas locator; live, video and replay sources |
-| `dartbot/vision.py` | detectors |
-| `dartbot/swing.py` | swing fit and click timing |
-| `dartbot/physics.py` | flight model, solver, fitting |
-| `dartbot/bot.py` | live loop |
-| `dartbot/analyze.py` | recording → throw records |
-| `model.json` | fitted parameters |
+| path                 | role                                                |
+| -------------------- | --------------------------------------------------- |
+| `dartbot/config.py`  | reference geometry: board segments, panels, anchors |
+| `dartbot/screen.py`  | canvas locator; live, video and replay sources      |
+| `dartbot/vision.py`  | detectors                                           |
+| `dartbot/swing.py`   | swing fit and click timing                          |
+| `dartbot/physics.py` | flight model, solver, fitting                       |
+| `dartbot/bot.py`     | live loop                                           |
+| `dartbot/analyze.py` | recording → throw records                           |
+| `model.json`         | fitted parameters                                   |
 
 ### Notes
 
