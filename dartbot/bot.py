@@ -157,7 +157,7 @@ def check(args):
     fit = fit_swing(*np.asarray(samples).T) if len(samples) >= 20 else None
     print(f"swing: {fit.describe() if fit else 'no fit (is a dart in hand?)'}")
     if fit and args.model.exists() and p.wind is not None:
-        m = Model.load(args.model)
+        m = Model.load(args.model).at_scale(src.canvas.scale)
         sol = m.solve(p.plat, p.wind.mph, p.wind.direction, fit.range)
         print(f"plan: {sol and f'launch {sol[0]:.2f} deg (sprite {sol[0] - m.angle_offset:.2f}), {sol[1]:.1f} px/deg'}")
 
@@ -227,6 +227,10 @@ class Bot:
 
     # -------------------------------------------------- planning
 
+    def aim_model(self) -> Model:
+        """The model with the angle offset for the current game window size."""
+        return self.model.at_scale(self.src.canvas.scale)
+
     def plan_click(self, panel, wind, samples):
         """Refit swing + aim until shortly before the click.
 
@@ -250,8 +254,9 @@ class Bot:
             if not patient and not fit_ok(fit, FIT_OK):
                 log.info(f"using a weaker swing fit after {PLAN_PATIENCE_S:.0f} s: {fit.describe()}")
 
-            theta, slope = aim(self.model, plat, wind, fit.range)
-            target = theta - self.model.angle_offset
+            m = self.aim_model()
+            theta, slope = aim(m, plat, wind, fit.range)
+            target = theta - m.angle_offset
             if t_cross is None:
                 t_min = now + MIN_LEAD_S + self.model.latency
             else:  # refining: stay on the crossing we already committed to
@@ -306,7 +311,8 @@ class Bot:
         t = Throw(source="live", plat=tuple(map(float, panel.plat)), wind_mph=wind.mph,
                   wind_dir=wind.direction, swing=keep, release_t=release_t,
                   path=path, score_before=panel.score, score_after=score_after,
-                  click_t=click_t, target_sprite=target, extra={"angle_v": V.ANGLE_VERSION})
+                  click_t=click_t, target_sprite=target,
+                  extra={"angle_v": V.ANGLE_VERSION, "scale": self.src.canvas.scale})
         records.append(self.args.log, t)
 
         m = measure_launch(self.model, t)
@@ -360,7 +366,7 @@ class Bot:
             log.info("dart left the hand before we clicked (manual throw?)")
         else:
             fit, theta, slope, t_click = planned
-            target = theta - self.model.angle_offset
+            target = theta - self.aim_model().angle_offset
             log.debug(f"final: swing {fit.describe()}, rate at click {fit.rate(t_click + self.model.latency):.0f} deg/s")
             if self.args.dry_run:
                 log.info(f"[dry] would click in {(t_click - time.perf_counter()) * 1000:.0f} ms "
@@ -422,6 +428,7 @@ def play(args):
         time.sleep(0.2)
 
     log.info(f"canvas {src.canvas}; model from {model.n_throws} throws, latency {model.latency * 1000:.0f} ms, "
+             f"angle offset {model.offset(src.canvas.scale):.2f} deg for this window size, "
              f"clicks on {args.direction} swing")
     try:
         while bot.throw_once():

@@ -56,7 +56,7 @@ def analyze_video(path: Path, log=print) -> list[Throw]:
                                 wind_mph=wind.mph if wind else 0.0,
                                 wind_dir=wind.direction if wind else 0.0,
                                 swing=sw, release_t=last_held_t, path=[], score_before=score,
-                                extra={"angle_v": V.ANGLE_VERSION})
+                                extra={"angle_v": V.ANGLE_VERSION, "scale": src.canvas.scale})
                 flight = V.FlightTracker(plat)
                 flight.add(field, t)
             elif free_run >= RELEASE_DEBOUNCE:

@@ -13,7 +13,7 @@ frame rate and live captures have jitter, but the geometry is exact.
 from __future__ import annotations
 
 import json
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, replace
 from pathlib import Path
 
 import numpy as np
@@ -25,6 +25,9 @@ from .swing import fit_swing, recent
 from .vision import ANGLE_VERSION, LEGACY_ANGLE_MAX, LEGACY_ANGLE_SHIFT
 
 MIN_CURRENT_THROWS = 30
+REF_INV_SCALE = 2.5          # 1/scale where angle_offset applies (scale 0.4)
+MIN_INV_SCALE_SPREAD = 0.3   # throws this far (in 1/scale) from the typical size ...
+MIN_SCALE_THROWS = 30        # ... needed in this number before the scale slope is fitted
 
 
 @dataclass
@@ -34,7 +37,16 @@ class Model:
     beta_y: float = 0.0
     rel_y0: float = -175.0          # release y = py + rel_y0 + rel_y1 * theta_deg
     rel_y1: float = -1.75
-    angle_offset: float = 4.3       # launch angle = sprite angle at (click + latency) + offset
+    # launch angle = sprite angle at (click + latency) + offset, where
+    # offset = angle_offset + offset_per_inv_scale * (1/scale - REF_INV_SCALE).
+    # The sprite angle is read from pixels, so its small bias depends on how large the game
+    # window is (scale = window size / reference frame).
+    angle_offset: float = 1.0
+    offset_per_inv_scale: float = 0.0
+    # Window sizes the slope was fitted on; outside them the offset is held at the edge
+    # instead of extrapolated.
+    scale_min: float = 0.4
+    scale_max: float = 0.4
     latency: float = 0.05           # click -> game reads input, seconds (per machine)
     board_x: float = C.BOARD_X
     target_y: float = C.BULLSEYE_Y
@@ -47,6 +59,16 @@ class Model:
     def load(cls, path: Path) -> "Model":
         known = cls.__dataclass_fields__
         return cls(**{k: v for k, v in json.loads(Path(path).read_text()).items() if k in known})
+
+    def offset(self, scale: float | None) -> float:
+        if scale is None:
+            return self.angle_offset
+        s = min(max(scale, self.scale_min), self.scale_max)
+        return self.angle_offset + self.offset_per_inv_scale * (1.0 / s - REF_INV_SCALE)
+
+    def at_scale(self, scale: float | None) -> "Model":
+        """This model with the angle offset for one window size baked in."""
+        return replace(self, angle_offset=self.offset(scale), offset_per_inv_scale=0.0)
 
     # ------------------------------------------------------------ prediction
 
@@ -212,28 +234,48 @@ def fit_model(throws: list[Throw], model: Model | None = None, log=print) -> Mod
     #    few current ones.
     current = [f for f in fits if f[0].extra.get("angle_v", 1) >= ANGLE_VERSION]
     use = current if len(current) >= MIN_CURRENT_THROWS else fits
-    obs = []  # (swing fit, time, measured theta, is_live)
+    # Window size per throw (recorded since the scale-aware offset; older throws were
+    # matched to their session logs). Throws without it are dropped once enough have it.
+    scaled = [f for f in use if f[0].extra.get("scale")]
+    if len(scaled) >= MIN_CURRENT_THROWS:
+        use = scaled
+    obs = []  # (swing fit, time, measured theta, is_live, 1/scale - ref)
     for t, theta, _, _ in use:
         when = t.click_t if t.click_t is not None else t.release_t
         f = swing_before(t, when)
         if f is not None:
-            obs.append((f, when, theta, t.click_t is not None))
+            s = t.extra.get("scale")
+            du = 1.0 / s - REF_INV_SCALE if s else 0.0
+            obs.append((f, when, theta, t.click_t is not None, du))
     if obs:
-        log(f"launch calibration from {'current-detector' if use is current else 'all'} throws")
+        log(f"launch calibration from {'current-detector' if use is not fits else 'all'} throws")
         live = any(o[3] for o in obs)
+        # The scale slope is only identifiable with enough throws away from the typical size.
+        du = np.array([o[4] for o in obs])
+        by_scale = np.sum(np.abs(du - np.median(du)) > MIN_INV_SCALE_SPREAD) >= MIN_SCALE_THROWS
 
         def resid(p):
-            off, lat = p[0], (p[1] if live else 0.0)
-            return np.array([th_ - (f.angle(w + (lat if is_live else 0.0)) + off)
-                             for f, w, th_, is_live in obs])
+            off = p[0]
+            k = p[1] if by_scale else 0.0
+            lat = p[-1] if live else 0.0
+            return np.array([th_ - (f.angle(w + (lat if is_live else 0.0)) + off + k * d)
+                             for f, w, th_, is_live, d in obs])
 
-        p0 = [model.angle_offset, model.latency] if live else [model.angle_offset]
+        p0 = ([model.angle_offset] + ([model.offset_per_inv_scale] if by_scale else [])
+              + ([model.latency] if live else []))
         r = least_squares(resid, p0, loss="cauchy", f_scale=2.0)
         model.angle_offset = float(r.x[0])
+        model.offset_per_inv_scale = float(r.x[1]) if by_scale else 0.0
+        seen = 1.0 / (du + REF_INV_SCALE)
+        model.scale_min, model.scale_max = float(seen.min()), float(seen.max())
         if live:
-            model.latency = float(np.clip(r.x[1], 0.0, 0.3))
+            model.latency = float(np.clip(r.x[-1], 0.0, 0.3))
         res = np.abs(r.fun)
-        log(f"launch: offset {model.angle_offset:.2f} deg"
+        scales = sorted({round(1.0 / (d + REF_INV_SCALE), 2) for d in du})
+        log(f"launch: offset {model.angle_offset:.2f} deg at scale {1 / REF_INV_SCALE:.2f}"
+            + (f", {model.offset_per_inv_scale:+.2f} deg per unit of 1/scale "
+               f"(scale 0.36: {model.offset(0.36):.2f}, 0.50: {model.offset(0.5):.2f})"
+               if by_scale else f" (one window size only, scales seen: {scales})")
             + (f", latency {model.latency * 1000:.0f} ms" if live else "")
             + f" (n={len(obs)}, median |err| {np.median(res):.2f} deg, p90 {np.percentile(res, 90):.2f})")
 
@@ -246,7 +288,7 @@ def latency_from_throw(t: Throw, model: Model, theta):
     f = swing_before(t, t.click_t)
     if f is None:
         return None
-    target = theta - model.angle_offset
+    target = theta - model.offset(t.extra.get("scale"))
     # The crossing of the target nearest to click_t + current latency estimate.
     ts = np.linspace(t.click_t - 0.05, t.click_t + 0.3, 701)
     err = np.abs(f.angle(ts) - target)

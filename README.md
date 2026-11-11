@@ -3,11 +3,11 @@
 **Get the "9 Bullseye in a row" trophy without the grind.**
 
 Idleon Darts Helper watches the Throwy Darts minigame, works out where every dart will fly (including the wind), and clicks at the
-right moment. It ships with a model trained on more than 1,400 real throws, so there is
+right moment. It ships with a model trained on almost 2,000 real throws, so there is
 nothing to train: install, open the minigame, run one command.
 
-- It has hit **16 and 17 bullseyes in a row** in real games, and up to ~85% bullseyes in
-  the first part of a game.
+- **Up to ~90% bullseyes** early in a game, and streaks of **18, 17 and 16 bullseyes in a
+  row** in real games (the trophy needs 9).
 - It only looks at the screen and clicks the mouse: no game files, no memory reading, no injection.
 - Any window size and any display scaling (a bigger game window is more accurate, see below).
 - It keeps playing until the game is over and tells you when the trophy streak is reached.
@@ -81,34 +81,37 @@ What the bot handles on its own:
 
 ### Expected accuracy
 
-Two things decide how often the bot hits the bullseye.
+Two things decide how often the bot hits the bullseye: the size of the game window and
+the speed of the swing.
 
 **Game window size.** The dart is only a few pixels thick, so a larger window gives a more
-precise angle reading. At the same swing speed, the scatter of the launch angle was:
+precise angle reading. **Make the game as large as your screen allows.** Bullseye rate by
+swing speed:
 
-| game area width, as captured | launch-angle scatter | bullseyes (early game) |
-| ---------------------------- | -------------------- | ---------------------- |
-| ~1,100 px                    | ~2.1–2.3°            | ~75–80%                |
-| ~1,500 px                    | ~0.9–1.4°            | ~82–85%                |
+| swing speed                      | when       | game ~1,100 px wide | game ~1,500 px wide |
+| -------------------------------- | ---------- | ------------------- | ------------------- |
+| up to ~200°/s                    | early game | ~70–80%             | **~80–90%**         |
+| ~200–330°/s                      | mid game   | ~40–50%             | ~60%                |
+| over ~330°/s                     | late game  | ~33%                | ~42%                |
+| launch-angle scatter, early game |            | ~2.1–2.3°           | ~0.9–1.3°           |
 
-On Windows these are real screen pixels. On macOS they are points: ~1,500 was the game
-filling a 1512-point-wide laptop screen. The bullseye tolerates about ±2.3° of launch
-angle. The ~1,500 px row comes from one 74-throw game, with streaks of 17 and 16. Smaller
+The ~1,500 px column comes from two games, 493 throws in total. The best one: 419 throws,
+83% bullseyes over the first 100, a streak of 18, final score 2008. Widths are as
+captured: real pixels on Windows, points on macOS (~1,500 was the game filling a
+1512-point laptop screen). The bullseye tolerates about ±2.3° of launch angle. Smaller
 windows work, just less accurately.
 
-**Swing speed.** The swing gets faster as a game goes on. The bot's click timing scatters
-by about ±10 ms, most likely the game's own frame rate, and that costs more the faster
-the dart moves. Measured on the ~1,100 px window:
+The angle reading also has a small bias that depends on the window size, about 1°
+between these two sizes. The model corrects for it automatically; for window sizes it
+hasn't seen, it uses the nearest size it has.
 
-| swing speed   | when       | bullseyes |
-| ------------- | ---------- | --------- |
-| up to ~220°/s | early game | ~70–80%   |
-| 220–300°/s    | mid game   | ~40–50%   |
-| over 300°/s   | late game  | ~33%      |
+**Swing speed.** The swing gets faster as a game goes on, down to a ~0.7 s period. The
+bot's click timing scatters by about ±10 ms, most likely the game's own frame rate, and
+that costs more the faster the dart moves. That's why the rates drop later in a game.
 
-Long streaks therefore happen early in a game. If you only want the trophy, use a big
-window and, if the first ~60 throws don't get it, restart the minigame. A new game starts
-with a slow swing again.
+Long streaks therefore happen early in a game: in the large window, the first 100 throws
+are the best place for the trophy. If they don't get it, restart the minigame; a new game
+starts with a slow swing again.
 
 ### Troubleshooting
 
@@ -123,7 +126,8 @@ with a slow swing again.
 ## Training data and the model
 
 `model.json` contains the fitted parameters: gravity, wind response, launch-angle offset
-and click latency. All coordinates are in a fixed reference frame, so it works on any
+(and how it changes with window size) and click latency. All coordinates are in a fixed
+reference frame, so it works on any
 screen. Every live throw is appended to `data/live_throws.jsonl`. After a few hundred new
 throws, or if you play on a very different machine, retrain:
 
@@ -152,7 +156,8 @@ Sharing `data/live_throws.jsonl` helps everyone, especially throws in strong win
   ~1 px.
 - **Aiming.** The bot solves for the launch angle that lands in the middle of the red
   segment. The launch angle equals the dart's on-screen angle at `click + latency`, plus a
-  small offset; `fit` learns both. The bot then predicts when the swing will next pass that
+  small offset that depends on the window size; `fit` learns all of it. The bot then
+  predicts when the swing will next pass that
   angle on the upswing and clicks that much earlier.
 - **Feedback.** After each throw, the bot measures the real launch angle from the flight
   path and the result from the score, then logs everything for the next `fit`.
